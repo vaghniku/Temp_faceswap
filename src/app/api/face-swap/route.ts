@@ -38,11 +38,10 @@ export async function POST(request: NextRequest) {
 
     // Execute Python script with parameters
     return new Promise((resolve) => {
-      // Simulate face swap since Python is not available in the container
-      // In a production environment, you would use a proper API call or ensure Python is installed
-      setTimeout(() => {
-        // Copy the target image to the output path as a simulation
-        exec(`cp ${targetPath} ${outputPath}`, (error, stdout, stderr) => {
+      // Use python3 command which is more commonly available
+      exec(
+        `python3 face_swap.py --source ${sourcePath} --target ${targetPath} --output ${outputPath} --blend ${blendStrength} --alignment ${faceAlignment}`,
+        (error, stdout, stderr) => {
           if (error) {
             console.error(`Error: ${error.message}`);
             console.error(`stderr: ${stderr}`);
@@ -63,8 +62,8 @@ export async function POST(request: NextRequest) {
               message: stdout,
             }),
           );
-        });
-      }, 2000); // Simulate processing time
+        },
+      );
     });
   } catch (error) {
     console.error("API error:", error);

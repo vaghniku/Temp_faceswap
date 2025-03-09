@@ -1,89 +1,85 @@
+import argparse
 import cv2
 import numpy as np
 import face_recognition
-import os
-import argparse
+from PIL import Image
 
-def face_swap(source_image_path, target_image_path, output_path=None):
+def face_swap(source_path, target_path, output_path, blend_strength=50, face_alignment=50):
     # Load the source and target images
-    source_image = face_recognition.load_image_file(source_image_path)
-    target_image = face_recognition.load_image_file(target_image_path)
+    source_image = face_recognition.load_image_file(source_path)
+    target_image = face_recognition.load_image_file(target_path)
     
-    # Convert images to RGB (face_recognition uses RGB, OpenCV uses BGR)
-    source_image_rgb = cv2.cvtColor(source_image, cv2.COLOR_BGR2RGB)
-    target_image_rgb = cv2.cvtColor(target_image, cv2.COLOR_BGR2RGB)
+    # Convert blend_strength and face_alignment to 0-1 range
+    blend_factor = blend_strength / 100.0
+    alignment_factor = face_alignment / 100.0
     
     # Find face landmarks in both images
     source_face_landmarks = face_recognition.face_landmarks(source_image)
     target_face_landmarks = face_recognition.face_landmarks(target_image)
     
+    # Check if faces were found in both images
     if not source_face_landmarks or not target_face_landmarks:
-        print("No faces detected in one or both images.")
-        return None
+        print("No faces found in one or both images")
+        # Copy target image to output as fallback
+        cv2.imwrite(output_path, cv2.cvtColor(target_image, cv2.COLOR_RGB2BGR))
+        return
     
-    # Get the first face from each image
-    source_landmarks = source_face_landmarks[0]
-    target_landmarks = target_face_landmarks[0]
+    # Convert to OpenCV format
+    source_image = cv2.cvtColor(source_image, cv2.COLOR_RGB2BGR)
+    target_image = cv2.cvtColor(target_image, cv2.COLOR_RGB2BGR)
     
     # Create mask for the source face
-    source_face_points = np.array([point for feature in source_landmarks.values() for point in feature], dtype=np.int32)
-    source_face_hull = cv2.convexHull(source_face_points)
     source_mask = np.zeros(source_image.shape[:2], dtype=np.uint8)
-    cv2.fillConvexPoly(source_mask, source_face_hull, 255)
+    source_points = np.array([point for feature in source_face_landmarks[0].values() for point in feature], dtype=np.int32)
+    cv2.fillConvexPoly(source_mask, source_points, 255)
     
     # Create mask for the target face
-    target_face_points = np.array([point for feature in target_landmarks.values() for point in feature], dtype=np.int32)
-    target_face_hull = cv2.convexHull(target_face_points)
     target_mask = np.zeros(target_image.shape[:2], dtype=np.uint8)
-    cv2.fillConvexPoly(target_mask, target_face_hull, 255)
+    target_points = np.array([point for feature in target_face_landmarks[0].values() for point in feature], dtype=np.int32)
+    cv2.fillConvexPoly(target_mask, target_points, 255)
     
-    # Find the center of the target face
-    target_face_center = np.mean(target_face_points, axis=0).astype(np.int32)
+    # Find bounding rectangles
+    source_rect = cv2.boundingRect(source_points)
+    target_rect = cv2.boundingRect(target_points)
     
-    # Calculate the bounding rectangle of the target face
-    x, y, w, h = cv2.boundingRect(target_face_hull)
+    # Extract the face regions
+    source_face = source_image[source_rect[1]:source_rect[1]+source_rect[3], source_rect[0]:source_rect[0]+source_rect[2]]
+    target_face = target_image[target_rect[1]:target_rect[1]+target_rect[3], target_rect[0]:target_rect[0]+target_rect[2]]
     
-    # Find the center of the source face
-    source_face_center = np.mean(source_face_points, axis=0).astype(np.int32)
+    # Resize source face to match target face size
+    source_face_resized = cv2.resize(source_face, (target_rect[2], target_rect[3]))
     
-    # Calculate the transformation matrix
-    source_points = np.array([source_face_points[0], source_face_points[len(source_face_points)//3], 
-                             source_face_points[2*len(source_face_points)//3]], dtype=np.float32)
-    target_points = np.array([target_face_points[0], target_face_points[len(target_face_points)//3], 
-                             target_face_points[2*len(target_face_points)//3]], dtype=np.float32)
+    # Create a mask for the resized source face
+    source_mask_resized = cv2.resize(source_mask[source_rect[1]:source_rect[1]+source_rect[3], source_rect[0]:source_rect[0]+source_rect[2]], (target_rect[2], target_rect[3]))
     
-    # Get the transformation matrix
-    transformation_matrix = cv2.getAffineTransform(source_points, target_points)
+    # Apply face alignment if needed (simplified version)
+    if alignment_factor > 0:
+        # Apply slight warping based on alignment factor
+        rows, cols = source_face_resized.shape[:2]
+        warp_factor = alignment_factor * 0.2  # Scale down for subtle effect
+        src_points = np.float32([[0, 0], [cols-1, 0], [0, rows-1], [cols-1, rows-1]])
+        dst_points = np.float32([[0, 0], [cols-1, 0], [int(warp_factor*cols), rows-1], [cols-1-int(warp_factor*cols), rows-1]])
+        warp_mat = cv2.getPerspectiveTransform(src_points, dst_points)
+        source_face_resized = cv2.warpPerspective(source_face_resized, warp_mat, (cols, rows))
+        source_mask_resized = cv2.warpPerspective(source_mask_resized, warp_mat, (cols, rows))
     
-    # Warp the source image to match the target face
-    warped_source = cv2.warpAffine(source_image_rgb, transformation_matrix, 
-                                  (target_image.shape[1], target_image.shape[0]), 
-                                  borderMode=cv2.BORDER_REFLECT_101)
+    # Create a copy of the target image for the result
+    result_image = target_image.copy()
     
-    # Create a mask for the warped source face
-    warped_mask = cv2.warpAffine(source_mask, transformation_matrix, 
-                               (target_image.shape[1], target_image.shape[0]), 
-                               borderMode=cv2.BORDER_REFLECT_101)
+    # Create a mask for seamless cloning
+    mask_for_seamless = source_mask_resized.copy()
     
-    # Combine the masks
-    combined_mask = cv2.bitwise_and(warped_mask, target_mask)
+    # Apply color correction to better match the skin tones
+    source_face_resized = cv2.addWeighted(source_face_resized, blend_factor, 
+                                         target_face, 1-blend_factor, 0)
     
-    # Create the output image
-    output_image = target_image_rgb.copy()
+    # Use seamless cloning to blend the faces
+    center = (target_rect[0] + target_rect[2]//2, target_rect[1] + target_rect[3]//2)
+    result_image = cv2.seamlessClone(source_face_resized, result_image, mask_for_seamless, center, cv2.NORMAL_CLONE)
     
-    # Apply seamless cloning
-    output_image = cv2.seamlessClone(warped_source, output_image, combined_mask, 
-                                    tuple(target_face_center), cv2.NORMAL_CLONE)
-    
-    # Convert back to BGR for OpenCV
-    output_image = cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR)
-    
-    # Save the output image if a path is provided
-    if output_path:
-        cv2.imwrite(output_path, output_image)
-        print(f"Face-swapped image saved to {output_path}")
-    
-    return output_image
+    # Save the result
+    cv2.imwrite(output_path, result_image)
+    print(f"Face swap completed and saved to {output_path}")
 
 def main():
     parser = argparse.ArgumentParser(description='Face Swap Application')
@@ -95,13 +91,7 @@ def main():
     
     args = parser.parse_args()
     
-    result = face_swap(args.source, args.target, args.output)
-    
-    if result is not None:
-        # Display the result
-        cv2.imshow('Face Swap Result', result)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+    face_swap(args.source, args.target, args.output, args.blend, args.alignment)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
